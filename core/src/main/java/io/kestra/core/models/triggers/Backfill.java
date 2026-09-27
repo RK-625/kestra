@@ -72,4 +72,9 @@ public class Backfill {
         title = "The nextExecutionDate before the backfill was created."
     )
     ZonedDateTime previousNextExecutionDate;
+
+    @Schema(
+        title = "The identifier of the async operation whose progress this backfill's executions report to."
+    )
+    private String operationId;
 }

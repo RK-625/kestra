@@ -432,6 +432,26 @@ class ScheduleTest {
     }
 
     @Test
+    void shouldCountExecutionsBetweenInclusiveOfBothEndpoints() {
+        Schedule trigger = Schedule.builder().id("schedule").type(Schedule.class.getName()).cron("* * * * *").build();
+
+        ZonedDateTime start = ZonedDateTime.now().truncatedTo(ChronoUnit.MINUTES);
+        ZonedDateTime end = start.plusMinutes(4);
+
+        assertThat(trigger.countExecutionsBetween(start, end)).isEqualTo(5);
+    }
+
+    @Test
+    void shouldCapCountExecutionsBetweenOnAVeryFrequentCron() {
+        Schedule trigger = Schedule.builder().id("schedule").type(Schedule.class.getName()).cron("* * * * * *").withSeconds(true).build();
+
+        ZonedDateTime start = ZonedDateTime.now().truncatedTo(ChronoUnit.SECONDS);
+        ZonedDateTime end = start.plusYears(10);
+
+        assertThat(trigger.countExecutionsBetween(start, end)).isEqualTo(Schedule.MAX_WHEN_CONDITION_ITERATIONS);
+    }
+
+    @Test
     void lateMaximumDelay() {
         Schedule trigger = Schedule.builder()
             .id("schedule").type(Schedule.class.getName())

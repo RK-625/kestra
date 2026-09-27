@@ -28,14 +28,19 @@ public record CreateBackfillTrigger(
     Backfill backfill,
     Instant timestamp,
     EventId eventId,
-    @Nullable String operationId) implements TriggerEvent, AsyncOperation {
+    @Nullable String operationId,
+    @Nullable String progressOperationId) implements TriggerEvent, AsyncOperation {
 
     public CreateBackfillTrigger(TriggerId id, Backfill backfill) {
-        this(id, backfill, Instant.now(), EventId.create(), null);
+        this(id, backfill, Instant.now(), EventId.create(), null, null);
     }
 
     public CreateBackfillTrigger withOperationId(String operationId) {
-        return new CreateBackfillTrigger(id, backfill, timestamp, eventId, operationId);
+        return new CreateBackfillTrigger(id, backfill, timestamp, eventId, operationId, progressOperationId);
+    }
+
+    public CreateBackfillTrigger withProgressOperationId(String progressOperationId) {
+        return new CreateBackfillTrigger(id, backfill, timestamp, eventId, operationId, progressOperationId);
     }
 
     public record Backfill(

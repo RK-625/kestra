@@ -7,6 +7,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.Optional;
 
+import org.hibernate.validator.constraints.time.DurationMin;
+
 import com.cronutils.model.Cron;
 import com.cronutils.model.definition.CronDefinitionBuilder;
 import com.cronutils.model.time.ExecutionTime;
@@ -25,8 +27,6 @@ import io.kestra.core.scheduler.SchedulerClock;
 import io.kestra.core.utils.TruthUtils;
 import io.kestra.core.validations.ScheduleValidation;
 import io.kestra.core.validations.TimezoneId;
-
-import org.hibernate.validator.constraints.time.DurationMin;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
@@ -337,6 +337,23 @@ public class Schedule extends AbstractTrigger implements Schedulable, TriggerOut
             }
         }
         return computePreviousEvaluationDate(executionTime, convertDateTime(SchedulerClock.now())).orElse(convertDateTime(SchedulerClock.now()));
+    }
+
+    /**
+     * Counts how many times this schedule fires within {@code [start, end]}, inclusive. Used to report the
+     * expected number of executions when a bounded backfill is created; capped at
+     * {@value #MAX_WHEN_CONDITION_ITERATIONS} ticks so a very frequent cron over a long window cannot pin
+     * the calling thread.
+     */
+    public int countExecutionsBetween(ZonedDateTime start, ZonedDateTime end) {
+        ExecutionTime executionTime = this.executionTime();
+        int count = 0;
+        Optional<ZonedDateTime> next = executionTime.nextExecution(start.minus(Duration.ofSeconds(1)));
+        while (next.isPresent() && !next.get().isAfter(end) && count < MAX_WHEN_CONDITION_ITERATIONS) {
+            count++;
+            next = executionTime.nextExecution(next.get());
+        }
+        return count;
     }
 
     @Override

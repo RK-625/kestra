@@ -171,6 +171,7 @@ public class TriggerEventHandler {
                         .end(event.backfill().end())
                         .inputs(event.backfill().inputs())
                         .labels(event.backfill().labels())
+                        .operationId(event.progressOperationId())
                         .build()
                 );
 
@@ -266,7 +267,7 @@ public class TriggerEventHandler {
      * By default (no recovery requested), missed schedules are skipped by re-computing the next evaluation date.
      */
     private TriggerState updateForReEnabledTrigger(Clock clock, TriggerState state, Flow flow,
-            AbstractTrigger trigger, @Nullable Boolean recoverMissedSchedules) {
+        AbstractTrigger trigger, @Nullable Boolean recoverMissedSchedules) {
         return switch (resolveRecoverMissedSchedules(flow, trigger, recoverMissedSchedules)) {
             // Keep the frozen past nextEvaluationDate so the scheduling loop replays each missed tick.
             case ALL -> state.getNextEvaluationDate() != null
@@ -281,7 +282,7 @@ public class TriggerEventHandler {
     }
 
     private RecoverMissedSchedules resolveRecoverMissedSchedules(Flow flow, AbstractTrigger trigger,
-            @Nullable Boolean recoverMissedSchedules) {
+        @Nullable Boolean recoverMissedSchedules) {
         if (!Boolean.TRUE.equals(recoverMissedSchedules) || !(trigger instanceof Schedulable schedulable)) {
             return RecoverMissedSchedules.NONE;
         }
@@ -342,6 +343,8 @@ public class TriggerEventHandler {
             return;
         }
 
+        emitBackfillExecutionProcessed(maybeState.get().getBackfill(), event);
+
         findTriggerState(event).ifPresent(
             state -> triggerStateStore.save(
                 state
@@ -350,6 +353,29 @@ public class TriggerEventHandler {
                     .updateOnExecutionTerminated(clock, event.executionState())
             )
         );
+    }
+
+    /**
+     * Reports one backfill-produced execution's outcome under the backfill's own
+     * {@link Backfill#getOperationId()}, so progress on the async operation that created the backfill
+     * (e.g. a bulk-operation notification) can be tallied per resulting execution rather than only
+     * acknowledging the backfill's creation.
+     */
+    private void emitBackfillExecutionProcessed(@Nullable Backfill backfill, TriggerExecutionTerminated event) {
+        if (backfill == null || backfill.getOperationId() == null) {
+            return;
+        }
+        boolean failed = event.executionState().isTerminatedInError();
+        asyncOperationService.emitProcessedIfAsync(
+            new BackfillProgressOperation(backfill.getOperationId()),
+            event.id().getTenantId(),
+            event.executionId(),
+            failed ? AsyncOperationProcessedEvent.Outcome.FAILED : AsyncOperationProcessedEvent.Outcome.SUCCEEDED,
+            failed ? "Execution %s terminated with state %s".formatted(event.executionId(), event.executionState()) : null
+        );
+    }
+
+    private record BackfillProgressOperation(String operationId) implements AsyncOperation {
     }
 
     /**

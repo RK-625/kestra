@@ -944,6 +944,72 @@ class TriggerEventHandlerTest {
     }
 
     @Test
+    void shouldEmitBackfillProgressEventWhenBackfilledExecutionTerminates() throws QueueException {
+        // GIVEN — a schedule trigger with a running backfill tagged with a progress operationId
+        String operationId = IdUtils.create();
+        Backfill backfill = Backfill.builder()
+            .start(SchedulerClock.now().minusDays(2))
+            .end(SchedulerClock.now())
+            .currentDate(SchedulerClock.now().minusDays(1))
+            .operationId(operationId)
+            .build();
+        triggerStateStore.save(triggerState.backfill(CLOCK, backfill));
+        handler = newTriggerEventHandler(List.of());
+        TriggerExecutionTerminated event = new TriggerExecutionTerminated(triggerId, "exec-123", State.Type.SUCCESS);
+
+        // WHEN — the backfilled execution terminates successfully
+        handler.handle(CLOCK, TEST_VNODE, event);
+
+        // THEN — the backfill's operation id receives a SUCCEEDED progress event for that execution
+        ArgumentCaptor<AsyncOperationProcessedEvent> captor = ArgumentCaptor.forClass(AsyncOperationProcessedEvent.class);
+        Mockito.verify(asyncOperationProcessedEventQueue).emit(captor.capture());
+        AsyncOperationProcessedEvent emitted = captor.getValue();
+        assertThat(emitted.operationId()).isEqualTo(operationId);
+        assertThat(emitted.tenantId()).isEqualTo(triggerId.getTenantId());
+        assertThat(emitted.itemId()).isEqualTo("exec-123");
+        assertThat(emitted.outcome()).isEqualTo(AsyncOperationProcessedEvent.Outcome.SUCCEEDED);
+    }
+
+    @Test
+    void shouldEmitFailedBackfillProgressEventWhenBackfilledExecutionFails() throws QueueException {
+        // GIVEN
+        String operationId = IdUtils.create();
+        Backfill backfill = Backfill.builder()
+            .start(SchedulerClock.now().minusDays(2))
+            .end(SchedulerClock.now())
+            .currentDate(SchedulerClock.now().minusDays(1))
+            .operationId(operationId)
+            .build();
+        triggerStateStore.save(triggerState.backfill(CLOCK, backfill));
+        handler = newTriggerEventHandler(List.of());
+        TriggerExecutionTerminated event = new TriggerExecutionTerminated(triggerId, "exec-123", State.Type.FAILED);
+
+        // WHEN — the backfilled execution fails
+        handler.handle(CLOCK, TEST_VNODE, event);
+
+        // THEN — the progress event reports the failure
+        ArgumentCaptor<AsyncOperationProcessedEvent> captor = ArgumentCaptor.forClass(AsyncOperationProcessedEvent.class);
+        Mockito.verify(asyncOperationProcessedEventQueue).emit(captor.capture());
+        AsyncOperationProcessedEvent emitted = captor.getValue();
+        assertThat(emitted.outcome()).isEqualTo(AsyncOperationProcessedEvent.Outcome.FAILED);
+        assertThat(emitted.error()).isNotNull();
+    }
+
+    @Test
+    void shouldNotEmitBackfillProgressEventWhenTriggerHasNoBackfill() throws QueueException {
+        // GIVEN — a schedule trigger with no backfill running
+        triggerStateStore.save(triggerState);
+        handler = newTriggerEventHandler(List.of());
+        TriggerExecutionTerminated event = new TriggerExecutionTerminated(triggerId, "exec-123", State.Type.SUCCESS);
+
+        // WHEN
+        handler.handle(CLOCK, TEST_VNODE, event);
+
+        // THEN — no progress event is emitted
+        Mockito.verify(asyncOperationProcessedEventQueue, Mockito.never()).emit(Mockito.any(AsyncOperationProcessedEvent.class));
+    }
+
+    @Test
     void shouldIgnoreStaleRealtimeTerminationWhenDispatchEpochSuperseded() {
         // GIVEN — a realtime trigger on its second dispatch (epoch 2), running on worker-2
         TriggerState realtimeState = TriggerState
@@ -1285,10 +1351,11 @@ class TriggerEventHandlerTest {
             .paused(false)
             .build();
         // the backfill has progressed, so the next evaluation date now points inside the backfill window
-        triggerStateStore.save(triggerState
-            .updateForNextEvaluationDate(CLOCK, liveNextEvaluationDate)
-            .backfill(CLOCK, backfill)
-            .updateForNextEvaluationDate(CLOCK, backfill.getStart().plusHours(8))
+        triggerStateStore.save(
+            triggerState
+                .updateForNextEvaluationDate(CLOCK, liveNextEvaluationDate)
+                .backfill(CLOCK, backfill)
+                .updateForNextEvaluationDate(CLOCK, backfill.getStart().plusHours(8))
         );
         handler = newTriggerEventHandler(List.of());
 
@@ -1314,10 +1381,11 @@ class TriggerEventHandlerTest {
             .paused(false)
             .build();
         // the running backfill has progressed, so the next evaluation date now points inside its window
-        triggerStateStore.save(triggerState
-            .updateForNextEvaluationDate(CLOCK, liveNextEvaluationDate)
-            .backfill(CLOCK, running)
-            .updateForNextEvaluationDate(CLOCK, running.getStart().plusHours(8))
+        triggerStateStore.save(
+            triggerState
+                .updateForNextEvaluationDate(CLOCK, liveNextEvaluationDate)
+                .backfill(CLOCK, running)
+                .updateForNextEvaluationDate(CLOCK, running.getStart().plusHours(8))
         );
         handler = newTriggerEventHandler(List.of(Fixtures.defaultFlow()));
         CreateBackfillTrigger event = new CreateBackfillTrigger(
