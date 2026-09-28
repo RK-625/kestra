@@ -23,6 +23,7 @@ import io.kestra.core.models.executions.TaskRunAttempt;
 import io.kestra.core.models.flows.Flow;
 import io.kestra.core.models.flows.GenericFlow;
 import io.kestra.core.models.flows.State;
+import io.kestra.core.models.property.Property;
 import io.kestra.core.queues.DispatchQueueInterface;
 import io.kestra.core.repositories.ExecutionRepositoryInterface;
 import io.kestra.core.repositories.FlowRepositoryInterface;
@@ -291,6 +292,34 @@ class LoopExecutionEventMessageHandlerTest {
         assertThat(taskRun.getState().getCurrent()).isEqualTo(State.Type.FAILED);
     }
 
+    @Test
+    void shouldFailExecutionWhenBreakWhenCannotBeEvaluated() throws InternalException {
+        // Given — breakWhen is a Pebble expression that fails to evaluate (unknown function)
+        var flow = flowRepository.create(GenericFlow.of(loopFlowWithBreakWhen("{{ unknownFunction(item.value) }}")));
+        var execution = Execution.newExecution(flow, Collections.emptyList());
+        String loopTaskRunId = IdUtils.create();
+        var loopTaskRun = loopTaskRun(loopTaskRunId, execution);
+        executionRepository.save(execution.withTaskRunList(List.of(loopTaskRun)));
+        // terminatedIteration + 1 = 1 < iterationCount = 3 → the handler evaluates breakWhen before emitting the next iteration
+        taskOutputService.saveOutputs(
+            loopTaskRun, Map.of(
+                Loop.ITERATION_COUNT_OUTPUT, 3,
+                Loop.RUNNING_ITERATIONS_OUTPUT, 1,
+                Loop.TERMINATED_ITERATIONS_OUTPUT, Collections.emptyMap()
+            )
+        );
+
+        // When
+        var loopRun = new LoopRun(execution, "loop", loopTaskRunId, 0, null, "a", null);
+        var message = new LoopExecutionEvent(loopRun, execution.getId(), State.Type.SUCCESS, null);
+        var maybeExecutor = handler.handle(message);
+
+        // Then — fails only this execution, does not throw and crash the whole instance
+        assertThat(maybeExecutor).isPresent();
+        var taskRun = maybeExecutor.get().getExecution().findTaskRunByTaskRunId(loopTaskRunId);
+        assertThat(taskRun.getState().getCurrent()).isEqualTo(State.Type.FAILED);
+    }
+
     private Flow loopFlow() {
         return loopFlow(true);
     }
@@ -307,6 +336,24 @@ class LoopExecutionEventMessageHandlerTest {
         return Flow.builder()
             .tenantId(tenant)
             .namespace(namespace)
+            .id(IdUtils.create())
+            .tasks(List.of(loopTask))
+            .build();
+    }
+
+    private Flow loopFlowWithBreakWhen(String breakWhen) {
+        var logTask = Log.builder().id("log").type(Log.class.getName()).message("Hello").build();
+        var loopTask = Loop.builder()
+            .id("loop")
+            .type(Loop.class.getName())
+            .values(List.of("a", "b", "c"))
+            .tasks(List.of(logTask))
+            .transmitFailed(true)
+            .breakWhen(Property.ofExpression(breakWhen))
+            .build();
+        return Flow.builder()
+            .tenantId(TestsUtils.randomTenant(this.getClass().getSimpleName()))
+            .namespace("namespace")
             .id(IdUtils.create())
             .tasks(List.of(loopTask))
             .build();
