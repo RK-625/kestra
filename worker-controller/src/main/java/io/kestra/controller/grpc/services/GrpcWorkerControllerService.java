@@ -2,6 +2,7 @@ package io.kestra.controller.grpc.services;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 
@@ -69,6 +70,9 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
 
     @Inject
     private RunContextLoggerFactory runContextLoggerFactory;
+
+    @Inject
+    private WorkerTenantAccessGuard workerTenantAccessGuard;
 
     /**
      * Bidirectional streaming RPC for job distribution using the pull/ack pattern.
@@ -194,7 +198,8 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
     public void sendWorkerTaskResults(OpaqueData request, StreamObserver<OpaqueData> responseObserver) {
         final MessageFormat messageFormat = MessageFormat.resolve(request.getHeader().getMessageFormat());
         BatchMessage<WorkerTaskResult> message = messageFormat.fromByteString(request.getMessage(), TypeReferences.WORKER_TASK_RESULT);
-        message.records().forEach(workerTaskResult ->
+        WorkerTenantAccessGuard.Partition<WorkerTaskResult> results = workerTenantAccessGuard.partition(request.getHeader(), message.records(), result -> result.getTaskRun().getTenantId());
+        Stream.concat(results.allowed().stream(), results.denied().stream().map(this::failedForDeniedTenant)).forEach(workerTaskResult ->
         {
             try {
                 workerTaskResultQueue.emit(workerTaskResult);
@@ -238,7 +243,8 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
     public void sendWorkerTriggerResults(OpaqueData request, StreamObserver<OpaqueData> responseObserver) {
         final MessageFormat messageFormat = MessageFormat.resolve(request.getHeader().getMessageFormat());
         BatchMessage<WorkerTriggerResult> message = messageFormat.fromByteString(request.getMessage(), TypeReferences.WORKER_TRIGGER_RESULT);
-        message.records().forEach(workerTriggerResult ->
+        WorkerTenantAccessGuard.Partition<WorkerTriggerResult> results = workerTenantAccessGuard.partition(request.getHeader(), message.records(), result -> result.id().getTenantId());
+        Stream.concat(results.allowed().stream(), results.denied().stream().map(GrpcWorkerControllerService::releasedForDeniedTenant)).forEach(workerTriggerResult ->
         {
             var evaluation = workerTriggerResult.evaluation();
 
@@ -267,6 +273,18 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
         responseObserver.onCompleted();
     }
 
+    private WorkerTaskResult failedForDeniedTenant(WorkerTaskResult denied) {
+        WorkerTaskResult failed = new WorkerTaskResult(denied.getTaskRun().fail());
+        runContextLoggerFactory.create(failed).logger().error(
+            "The worker running this task is not allowed to serve tenant '{}', so its result was rejected and the task run failed.", failed.getTaskRun().getTenantId()
+        );
+        return failed;
+    }
+
+    private static WorkerTriggerResult releasedForDeniedTenant(WorkerTriggerResult denied) {
+        return new WorkerTriggerResult(denied.id(), denied.type(), null, denied.dispatchEpoch());
+    }
+
     /**
      * A realtime trigger sends one result per emitted execution while it keeps running on the worker;
      * those results must not release its WorkerJobRunning entry, which the liveness coordinator relies
@@ -281,8 +299,9 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
     public void sendWorkerLogEntries(OpaqueData request, StreamObserver<OpaqueData> responseObserver) {
         final MessageFormat messageFormat = MessageFormat.resolve(request.getHeader().getMessageFormat());
         BatchMessage<LogEntry> message = messageFormat.fromByteString(request.getMessage(), TypeReferences.LOG_ENTRY);
-        if (!message.records().isEmpty()) {
-            logEntryEmitter.emits(message.records());
+        List<LogEntry> logEntries = workerTenantAccessGuard.partition(request.getHeader(), message.records(), LogEntry::getTenantId).allowed();
+        if (!logEntries.isEmpty()) {
+            logEntryEmitter.emits(logEntries);
         }
         responseObserver.onNext(OpaqueData.newBuilder().setHeader(request.getHeader()).build());
         responseObserver.onCompleted();
@@ -292,8 +311,9 @@ public class GrpcWorkerControllerService extends WorkerControllerServiceGrpc.Wor
     public void sendWorkerMetricEntries(OpaqueData request, StreamObserver<OpaqueData> responseObserver) {
         final MessageFormat messageFormat = MessageFormat.resolve(request.getHeader().getMessageFormat());
         BatchMessage<MetricEntry> message = messageFormat.fromByteString(request.getMessage(), TypeReferences.METRIC_ENTRY);
-        if (!message.records().isEmpty()) {
-            metricEntryQueue.emitAsync(message.records());
+        List<MetricEntry> metricEntries = workerTenantAccessGuard.partition(request.getHeader(), message.records(), MetricEntry::getTenantId).allowed();
+        if (!metricEntries.isEmpty()) {
+            metricEntryQueue.emitAsync(metricEntries);
         }
         responseObserver.onNext(OpaqueData.newBuilder().setHeader(request.getHeader()).build());
         responseObserver.onCompleted();

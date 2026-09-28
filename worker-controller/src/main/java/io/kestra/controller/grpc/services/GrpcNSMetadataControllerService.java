@@ -32,12 +32,15 @@ public class GrpcNSMetadataControllerService extends NamespaceFileMetadataServic
 
     private final NamespaceFileMetadataStateStore stateStore;
     private final WorkerInfo workerInfo;
+    private final WorkerTenantAccessGuard workerTenantAccessGuard;
 
     @Inject
     public GrpcNSMetadataControllerService(final NamespaceFileMetadataStateStore stateStore,
-        final WorkerInfo workerInfo) {
+        final WorkerInfo workerInfo,
+        final WorkerTenantAccessGuard workerTenantAccessGuard) {
         this.stateStore = stateStore;
         this.workerInfo = workerInfo;
+        this.workerTenantAccessGuard = workerTenantAccessGuard;
     }
 
     @Override
@@ -196,11 +199,15 @@ public class GrpcNSMetadataControllerService extends NamespaceFileMetadataServic
     }
 
     @Override
-    public void save(OpaqueData request, StreamObserver<OpaqueData> responseObserver) {
+    public void save(NamespaceFileMetadataSaveRequest request, StreamObserver<OpaqueData> responseObserver) {
         try {
             log.trace("Received save request");
 
             NamespaceFileMetadata item = MESSAGE_FORMAT.fromByteString(request.getMessage(), NamespaceFileMetadata.class);
+            if (!request.getTenantId().isEmpty()) {
+                item = item.toBuilder().tenantId(request.getTenantId()).build();
+            }
+            workerTenantAccessGuard.checkSave(request.getHeader(), request.getTenantId(), item.getTenantId());
 
             NamespaceFileMetadata result = stateStore.save(item);
 
